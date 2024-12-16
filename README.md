@@ -1,1 +1,0 @@
-"# cloud-script-ceph" 
