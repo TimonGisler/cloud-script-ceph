@@ -9,7 +9,7 @@ setup_ceph_cluster() {
     MONITOR_NODE="86.119.30.12"       # Replace with your monitor node's IP or hostname
     OSD_NODES=("86.119.31.236" "86.119.30.244" "86.119.30.199")  # Replace with your OSD nodes' IPs or hostnames
 
-    # Install cephadm on monitor node
+    # Install cephadm on monitor node 
     echo "Installing cephadm on $MONITOR_NODE..."
 
     ssh debian@$MONITOR_NODE "
