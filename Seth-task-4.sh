@@ -110,9 +110,11 @@ install_docker_on_all_nodes() {
 
 
 bootstrap_monitor() {
-    local monip="10.0.5.77"
+    local monip="10.0.8.245"
+    local monitor_ip="86.119.45.32"
+
     echo "Bootstrapping cluster on Monitor01 ($monip)..."
-    ssh debian@$monip "sudo cephadm bootstrap --mon-ip $monip"
+    ssh debian@$monitor_ip "sudo cephadm bootstrap --mon-ip $monip"
 }
 
 
@@ -171,6 +173,57 @@ generate_and_add_ssh_keys() {
     done
 
     echo "SSH keys have been generated and distributed to all hosts"
+}
+
+setup_ceph_cluster() {
+    echo "Starting Ceph cluster setup..."
+    
+    # Get monitor node IP
+    MONITOR_NODE=$(get_ip_by_hostname "monitor01")
+    
+    # Create array of OSD node IPs
+    OSD_NODES=(
+        "$(get_ip_by_hostname "osd01")"
+        "$(get_ip_by_hostname "osd02")"
+        "$(get_ip_by_hostname "osd03")"
+    )
+
+    # Install cephadm on monitor node
+    echo "Installing cephadm on $MONITOR_NODE..."
+    ssh debian@$MONITOR_NODE "sudo apt install -y cephadm"
+
+    # Get the IP address of the monitor node
+    MONITOR_IP=$(ssh debian@$MONITOR_NODE "hostname -I | awk '{print \$1}'")
+
+    # Bootstrap the cluster
+    echo "Bootstrapping the Ceph cluster..."
+    ssh debian@$MONITOR_NODE "sudo rm -f /etc/ceph/ceph.conf && sudo cephadm bootstrap --mon-ip $MONITOR_IP"
+
+    # Install ceph public key on monitor node
+    ssh debian@$MONITOR_NODE "sudo cat /etc/ceph/ceph.pub" > ceph.pub
+
+    # Distribute the ceph public key to all OSD nodes
+    for node in "${OSD_NODES[@]}"; do
+        echo "Installing ceph public key on $node..."
+        scp ceph.pub debian@$node:~/ceph.pub
+        ssh debian@$node "sudo mkdir -p /etc/ceph && sudo mv ~/ceph.pub /etc/ceph/ceph.pub"
+    done
+
+    # Add OSD nodes to the cluster
+    for node in "${OSD_NODES[@]}"; do
+        echo "Adding host $node to cluster..."
+        ssh debian@$MONITOR_NODE "sudo ceph orch host add $(ssh debian@$node hostname)"
+        
+        # Label the host with 'osd'
+        echo "Labeling host $node with 'osd'..."
+        ssh debian@$MONITOR_NODE "sudo ceph orch host label add $(ssh debian@$node hostname) osd"
+    done
+
+    # Deploy OSDs on available devices with --method raw
+    echo "Deploying OSDs on all available devices with --method raw..."
+    ssh debian@$MONITOR_NODE "sudo ceph orch apply osd --all-available-devices --method raw"
+    
+    echo "Ceph cluster setup complete."
 }
 
 #########################
@@ -247,6 +300,33 @@ create_cephfs_client() {
 }
 
 
+clean_devices() {
+    echo "Cleaning devices on all hosts..."
+    echo "This cleaning is necessary because Ceph requires raw devices without:"
+    echo "  - existing filesystems"
+    echo "  - LVM configurations"
+    echo "  - partitions"
+    echo "  - other metadata"
+
+    for ip in $(get_all_ips); do
+        echo "Cleaning devices on $ip..."
+        ssh debian@${ip} "
+            sudo wipefs -a /dev/vdb
+            sudo sgdisk --zap-all /dev/vdb
+            sudo dd if=/dev/zero of=/dev/vdb bs=1M count=100
+            sudo partprobe /dev/vdb
+        "
+    done
+
+    # Wait a moment for devices to settle
+    sleep 5
+
+    # Verify available devices again using monitor01's IP
+    echo "Checking available devices after cleaning..."
+    ssh debian@$(get_ip_by_hostname "monitor01") "sudo ceph orch device ls"
+}
+
+
 main() {
     while true; do
         echo "Choose an option:"
@@ -256,12 +336,13 @@ main() {
         echo "4) Install Ceph"
         echo "5) Bootstrap monitor cluster"
         echo "6) Generate SSH key and add to all hosts"
-        echo "7) Setup Ceph cluster"
-        echo "8) Create RBD pool"
-        echo "9) Create RBD client"
-        echo "10) Create RBD image"
-        echo "11) Create CephFS filesystem"
-        echo "12) Create CephFS client"
+        echo "7) Clean devices"
+        echo "8) Setup Ceph cluster"
+        echo "9) Create RBD pool"
+        echo "10) Create RBD client"
+        echo "11) Create RBD image"
+        echo "12) Create CephFS filesystem"
+        echo "13) Create CephFS client"
         echo "42) Exit"
 
         read -p "Press the key for the choice: " choice
@@ -276,12 +357,13 @@ main() {
             4) install_ceph_on_all_nodes ;;
             5) bootstrap_monitor ;;
             6) generate_and_add_ssh_keys ;;
-            7) setup_ceph_cluster ;;
-            8) create_rbd_pool ;;
-            9) create_rbd_client ;;
-            10) create_rbd_image ;;
-            11) create_cephfs ;;
-            12) create_cephfs_client ;;
+            7) clean_devices ;;
+            8) setup_ceph_cluster ;;
+            9) create_rbd_pool ;;
+            10) create_rbd_client ;;
+            11) create_rbd_image ;;
+            12) create_cephfs ;;
+            13) create_cephfs_client ;;
             42) echo "Exit"; exit ;;
             *) echo "Invalid choice. Please enter a valid option." ;;
         esac
